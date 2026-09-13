@@ -36,7 +36,7 @@ interface AppState {
   chat: ChatMessage[]
 }
 
-const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? '')
+const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000')
 const STORAGE_KEY_TRANSCRIBE_LANG = 'voice-command-api.transcribe-language'
 const REQUEST_TIMEOUT_MS = 45000
 const MAX_RECORDING_MS = 20000
@@ -454,7 +454,7 @@ function validateFlowResponse(data: unknown): TranscribeFlowResponse {
 
 function appendUserAndAssistantMessages(
   transcription: string,
-  _instruction: InstructionResponse,
+  instruction: InstructionResponse,
   result: unknown,
 ): void {
   appendMessage({
@@ -469,7 +469,68 @@ function appendUserAndAssistantMessages(
     body: 'The backend transcribed the audio, resolved the instruction, and executed the task action.',
     response: result,
   })
+
+  speakAction(instruction, result)
 }
+
+function speakAction(instruction: InstructionResponse, result: unknown): void {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    return
+  }
+
+  let textToSpeak = ''
+  const method = instruction.method.toUpperCase()
+
+  if (method === 'GET') {
+    if (Array.isArray(result)) {
+      if (result.length === 0) {
+        textToSpeak = 'You have no tasks.'
+      } else {
+        const taskList = (result as Array<{ id?: number; title?: string; done?: boolean }>)
+          .map((t) => `${t.title ?? 'Untitled'}${t.done ? ' done' : ''}`)
+          .join(', ')
+        textToSpeak = `You have ${result.length} task${result.length > 1 ? 's' : ''}: ${taskList}.`
+      }
+    } else {
+      textToSpeak = 'Retrieved tasks.'
+    }
+  } else if (method === 'POST') {
+    const task = result as { id?: number; title?: string } | undefined
+    if (task && task.title) {
+      textToSpeak = `Created task ${task.title}`
+    } else {
+      textToSpeak = 'Task created.'
+    }
+  } else if (method === 'PATCH' || method === 'PUT') {
+    const task = result as { id?: number; title?: string; done?: boolean } | undefined
+    if (task && task.id) {
+      const statusText = task.done ? 'completed' : 'updated'
+      textToSpeak = `Task ${task.id} ${statusText}: ${task.title ?? ''}`.trim()
+    } else {
+      textToSpeak = 'Task updated.'
+    }
+  } else if (method === 'DELETE') {
+    const res = result as { detail?: string } | undefined
+    textToSpeak = res?.detail ?? 'Task deleted.'
+  } else {
+    textToSpeak = 'Action completed.'
+  }
+
+  if (textToSpeak) {
+    try {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(textToSpeak)
+      const lang = selectedTranscriptionLanguage()
+      if (lang) {
+        utterance.lang = lang
+      }
+      window.speechSynthesis.speak(utterance)
+    } catch {
+      // Ignore speech synthesis errors if unsupported by browser environment
+    }
+  }
+}
+
 
 async function fetchWithTimeout(
   input: string,
@@ -521,7 +582,7 @@ function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
 
   if (!trimmed) {
-    throw new Error('Missing VITE_API_BASE_URL. Add it to frontend/.env.')
+    return 'http://localhost:8000'
   }
 
   return trimmed.replace(/\/+$/, '')
